@@ -242,11 +242,11 @@ def _fetch_tencent_spot() -> pd.DataFrame:
     for col in df.columns:
         if col not in ("code", "name"):
             df[col] = pd.to_numeric(df[col], errors="coerce")
-    # 腾讯市值单位是万元，转为元
+    # 腾讯市值单位是亿元，转为元
     if "total_market_cap" in df.columns:
-        df["total_market_cap"] = df["total_market_cap"] * 10000
+        df["total_market_cap"] = df["total_market_cap"] * 1e8
     if "circulating_market_cap" in df.columns:
-        df["circulating_market_cap"] = df["circulating_market_cap"] * 10000
+        df["circulating_market_cap"] = df["circulating_market_cap"] * 1e8
     return df
 
 
@@ -450,10 +450,20 @@ def filter_stocks(df: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
     min_cap = selection.get("min_market_cap", 30)
     if "circulating_market_cap" in df.columns:
         cap_col = df["circulating_market_cap"]
-        if cap_col.notna().any() and (cap_col > 0).any():
-            df = df[df["circulating_market_cap"] >= min_cap * 1e8]
-        else:
-            pass  # 数据源不提供市值时跳过筛选
+        valid_caps = cap_col.dropna()
+        if len(valid_caps) > 0 and (valid_caps > 0).any():
+            threshold = min_cap * 1e8  # 转为元
+            # 自动检测单位：如果中位数远小于阈值，可能单位不是元
+            median_cap = valid_caps[valid_caps > 0].median()
+            if median_cap < 1e6:  # 中位数小于100万，可能是亿元单位
+                threshold = min_cap  # 直接用亿元比较
+            elif median_cap < 1e9:  # 中位数小于10亿，可能是万元单位
+                threshold = min_cap * 1e4  # 转为万元比较
+            filtered = df[df["circulating_market_cap"] >= threshold]
+            if len(filtered) > 50:  # 确保筛选后还有足够股票
+                df = filtered
+            else:
+                print(f"  ℹ 市值筛选后仅剩{len(filtered)}只，跳过市值筛选")
 
     if "pct_change" in df.columns:
         pct = df["pct_change"]
