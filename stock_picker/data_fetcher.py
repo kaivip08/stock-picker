@@ -1,16 +1,77 @@
 """数据获取模块 - 使用AKShare获取A股行情数据"""
 
+import os
+import random
 import time
 from datetime import datetime, timedelta
 from typing import Any
 
 import akshare as ak
 import pandas as pd
+import requests
+
+
+# 设置请求头，避免被服务器拒绝
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Referer": "https://quote.eastmoney.com/",
+}
+
+
+def _patch_session() -> None:
+    """为requests设置默认headers和超时，提高连接稳定性"""
+    original_get = requests.Session.get
+    original_post = requests.Session.post
+
+    def patched_get(self: requests.Session, url: str, **kwargs: Any) -> requests.Response:
+        kwargs.setdefault("timeout", 30)
+        if "headers" not in kwargs:
+            kwargs["headers"] = {}
+        for k, v in _HEADERS.items():
+            kwargs["headers"].setdefault(k, v)
+        return original_get(self, url, **kwargs)
+
+    def patched_post(self: requests.Session, url: str, **kwargs: Any) -> requests.Response:
+        kwargs.setdefault("timeout", 30)
+        if "headers" not in kwargs:
+            kwargs["headers"] = {}
+        for k, v in _HEADERS.items():
+            kwargs["headers"].setdefault(k, v)
+        return original_post(self, url, **kwargs)
+
+    requests.Session.get = patched_get  # type: ignore[assignment]
+    requests.Session.post = patched_post  # type: ignore[assignment]
+
+
+# 在模块加载时应用补丁
+_patch_session()
+
+
+def _retry_call(func: Any, max_retries: int = 5, base_delay: float = 2.0, **kwargs: Any) -> Any:
+    """带指数退避的重试调用"""
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            result = func(**kwargs)
+            return result
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                print(f"\n  ⚠ 请求失败（第{attempt + 1}次），{delay:.1f}秒后重试: {type(e).__name__}")
+                time.sleep(delay)
+    raise last_error  # type: ignore[misc]
 
 
 def get_all_a_stocks() -> pd.DataFrame:
-    """获取所有A股股票列表"""
-    df = ak.stock_zh_a_spot_em()
+    """获取所有A股股票列表（带重试）"""
+    df = _retry_call(ak.stock_zh_a_spot_em, max_retries=5, base_delay=3.0)
     df = df.rename(columns={
         "代码": "code",
         "名称": "name",
@@ -68,8 +129,8 @@ def filter_stocks(df: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
 def get_stock_history(
     code: str,
     days: int = 120,
-    retry_times: int = 3,
-    interval: float = 0.5,
+    retry_times: int = 5,
+    interval: float = 1.0,
 ) -> pd.DataFrame | None:
     """获取单只股票的历史行情数据"""
     end_date = datetime.now().strftime("%Y%m%d")
@@ -103,7 +164,8 @@ def get_stock_history(
                 return df
         except Exception:
             if attempt < retry_times - 1:
-                time.sleep(interval * (attempt + 1))
+                delay = interval * (2 ** attempt) + random.uniform(0, 0.5)
+                time.sleep(delay)
             continue
     return None
 
@@ -111,8 +173,8 @@ def get_stock_history(
 def batch_get_history(
     codes: list[str],
     days: int = 120,
-    retry_times: int = 3,
-    interval: float = 0.5,
+    retry_times: int = 5,
+    interval: float = 1.0,
     progress_callback: Any = None,
 ) -> dict[str, pd.DataFrame]:
     """批量获取多只股票的历史数据"""
@@ -124,5 +186,6 @@ def batch_get_history(
             result[code] = df
         if progress_callback:
             progress_callback(i + 1, total, code)
-        time.sleep(interval)
+        # 随机间隔，避免请求过于规律被限流
+        time.sleep(interval + random.uniform(0, 0.5))
     return result

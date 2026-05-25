@@ -43,9 +43,9 @@ data:
   # 获取历史数据天数
   history_days: 120
   # 数据获取重试次数
-  retry_times: 3
+  retry_times: 5
   # 请求间隔（秒）
-  request_interval: 0.5
+  request_interval: 1.0
 
 # 报告设置
 report:
