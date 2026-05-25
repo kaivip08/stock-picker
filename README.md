@@ -95,6 +95,7 @@ python main.py --csv
 ## 技术栈
 
 - Python 3.10+
-- [AKShare](https://github.com/akfamily/akshare) - A股数据接口
+- 东方财富API - A股实时行情与历史数据
 - Pandas / NumPy - 数据分析
+- Requests - HTTP请求（带自动重试）
 - Tabulate - 表格格式化
