@@ -140,7 +140,7 @@ def _fetch_eastmoney_history(code: str, start_date: str, end_date: str) -> pd.Da
     for url in _EASTMONEY_HIST_URLS:
         try:
             resp = _session.get(
-                url, params=params, timeout=15,
+                url, params=params, timeout=5,
                 headers={"Referer": "https://quote.eastmoney.com/"},
             )
             resp.raise_for_status()
@@ -276,6 +276,11 @@ def _get_stock_code_list() -> list[str]:
 def _fetch_tencent_history(code: str, start_date: str, end_date: str) -> pd.DataFrame | None:
     """腾讯历史行情API"""
     tc_code = _tencent_code(code)
+    # 腾讯API需要 YYYY-MM-DD 格式，输入可能是 YYYYMMDD
+    if len(start_date) == 8 and "-" not in start_date:
+        start_date = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
+    if len(end_date) == 8 and "-" not in end_date:
+        end_date = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
     url = (
         f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
         f"?param={tc_code},day,{start_date},{end_date},640,qfq"
