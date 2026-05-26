@@ -3,6 +3,7 @@
 # 选股参数
 selection:
   top_n: 5
+  pre_filter_count: 100      # 预筛选活跃股数量（越大分析越全面，但越慢）
   min_market_cap: 30         # 最小流通市值（亿元）
   exclude_st: true
   exclude_kcb: false         # 是否排除科创板（688）

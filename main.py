@@ -137,12 +137,13 @@ def run(config_path: str | None = None, top_n: int | None = None) -> list[dict]:
                 (pct.fillna(0) > -3) & (pct.fillna(0) < 7)
             ]
 
-    # 按量比排序取前100只
+    # 按量比排序取前N只
+    pre_filter_count = config.get("selection", {}).get("pre_filter_count", 100)
     if "volume_ratio" in pre_candidates.columns and pre_candidates["volume_ratio"].notna().any():
         pre_candidates = pre_candidates.sort_values("volume_ratio", ascending=False, na_position="last")
     elif "pct_change" in pre_candidates.columns:
         pre_candidates = pre_candidates.sort_values("pct_change", ascending=False, na_position="last")
-    candidate_codes = pre_candidates["code"].head(100).tolist()
+    candidate_codes = pre_candidates["code"].head(pre_filter_count).tolist()
     print(f"  预筛选 {len(candidate_codes)} 只活跃股进行详细分析")
 
     # 基本面过滤
