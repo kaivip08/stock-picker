@@ -86,6 +86,29 @@ def format_report(
                 sign = "+" if net >= 0 else ""
                 lines.append(f"        超大单净流入: {sign}{net / 1e4:.1f}万")
 
+        # 基本面信息
+        if "fundamentals" in rec and rec["fundamentals"]:
+            fund = rec["fundamentals"]
+            fund_parts = []
+            roe = fund.get("roe")
+            if roe is not None:
+                fund_parts.append(f"ROE:{roe:.1f}%")
+            rev_yoy = fund.get("revenue_yoy")
+            if rev_yoy is not None:
+                fund_parts.append(f"营收增长:{rev_yoy:.1f}%")
+            profit_yoy = fund.get("profit_yoy")
+            if profit_yoy is not None:
+                fund_parts.append(f"利润增长:{profit_yoy:.1f}%")
+            gross_margin = fund.get("gross_margin")
+            if gross_margin is not None:
+                fund_parts.append(f"毛利率:{gross_margin:.1f}%")
+            if fund_parts:
+                lines.append(f"      基本面: {' | '.join(fund_parts)}")
+
+        # 事件标记
+        if "event_flags" in rec and rec["event_flags"]:
+            lines.append(f"      事件: {', '.join(rec['event_flags'])}")
+
         # 板块信息
         if "sector_info" in rec and rec["sector_info"]:
             lines.append(f"      所属板块: {rec['sector_info']}")

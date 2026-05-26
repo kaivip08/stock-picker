@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """A股短线推荐系统 v2.0 - 主程序入口
 
-多维度选股：技术指标 + 资金流向 + 市场情绪 + 板块概念
+多维度选股：技术指标 + 资金流向 + 市场情绪 + 板块概念 + 基本面 + 事件驱动
 """
 
 import argparse
 import sys
 from datetime import datetime
 from pathlib import Path
+
+import pandas as pd
 
 from stock_picker.config import load_config, get_output_dir
 from stock_picker.data_fetcher import get_all_a_stocks, filter_stocks, batch_get_history
@@ -17,6 +19,8 @@ from stock_picker.report import format_report, save_report_text, save_report_csv
 from stock_picker.capital_flow import get_capital_flow_rank, get_north_flow
 from stock_picker.market_sentiment import calc_market_sentiment, get_index_quotes
 from stock_picker.sector import get_hot_sectors
+from stock_picker.fundamentals import get_financial_indicators, filter_by_fundamentals
+from stock_picker.events import get_event_flags
 
 
 def print_progress(current: int, total: int, code: str) -> None:
@@ -33,7 +37,7 @@ def run(config_path: str | None = None, top_n: int | None = None) -> list[dict]:
     print("=" * 50)
 
     # 1. 加载配置
-    print("\n[1/7] 加载配置...")
+    print("\n[1/9] 加载配置...")
     config = load_config(config_path)
     if top_n:
         config.setdefault("selection", {})["top_n"] = top_n
@@ -41,7 +45,7 @@ def run(config_path: str | None = None, top_n: int | None = None) -> list[dict]:
     print(f"  推荐数量: {final_top_n}")
 
     # 2. 获取市场概览
-    print("\n[2/7] 获取市场概览...")
+    print("\n[2/9] 获取市场概览...")
     market_context = {}
     try:
         indices = get_index_quotes()
@@ -65,7 +69,7 @@ def run(config_path: str | None = None, top_n: int | None = None) -> list[dict]:
         pass
 
     # 3. 获取股票列表
-    print("\n[3/7] 获取A股实时行情...")
+    print("\n[3/9] 获取A股实时行情...")
     all_stocks = get_all_a_stocks()
     print(f"  获取到 {len(all_stocks)} 只股票")
 
@@ -79,7 +83,7 @@ def run(config_path: str | None = None, top_n: int | None = None) -> list[dict]:
         pass
 
     # 4. 获取热门板块
-    print("\n[4/7] 获取热门板块...")
+    print("\n[4/9] 获取热门板块...")
     try:
         hot_sectors = get_hot_sectors(top_n=5)
         market_context["hot_sectors"] = hot_sectors
@@ -91,7 +95,7 @@ def run(config_path: str | None = None, top_n: int | None = None) -> list[dict]:
         print(f"  获取板块数据失败: {e}")
 
     # 5. 获取资金流向排行
-    print("\n[5/7] 获取资金流向...")
+    print("\n[5/9] 获取资金流向...")
     capital_flow_df = None
     try:
         capital_flow_df = get_capital_flow_rank()
@@ -102,8 +106,21 @@ def run(config_path: str | None = None, top_n: int | None = None) -> list[dict]:
     except Exception as e:
         print(f"  获取资金流向失败: {e}")
 
-    # 6. 初步筛选
-    print("\n[6/7] 初步筛选...")
+    # 6. 获取基本面数据
+    print("\n[6/9] 获取基本面数据...")
+    fundamentals_df = None
+    fund_map = {}
+    try:
+        fundamentals_df = get_financial_indicators()
+        if fundamentals_df is not None and not fundamentals_df.empty:
+            print(f"  获取到 {len(fundamentals_df)} 只股票的财务数据")
+        else:
+            print("  基本面数据暂不可用")
+    except Exception as e:
+        print(f"  获取基本面数据失败: {e}")
+
+    # 7. 初步筛选
+    print("\n[7/9] 初步筛选...")
     filtered = filter_stocks(all_stocks, config)
     print(f"  筛选后剩余 {len(filtered)} 只股票")
 
@@ -128,8 +145,13 @@ def run(config_path: str | None = None, top_n: int | None = None) -> list[dict]:
     candidate_codes = pre_candidates["code"].head(100).tolist()
     print(f"  预筛选 {len(candidate_codes)} 只活跃股进行详细分析")
 
-    # 7. 获取历史数据 + 计算指标 + 综合评分
-    print("\n[7/7] 获取历史数据并分析...")
+    # 基本面过滤
+    if fundamentals_df is not None and not fundamentals_df.empty:
+        candidate_codes, fund_map = filter_by_fundamentals(candidate_codes, fundamentals_df)
+        print(f"  基本面过滤后剩余 {len(candidate_codes)} 只")
+
+    # 8. 获取历史数据 + 计算指标 + 综合评分
+    print("\n[8/9] 获取历史数据并分析...")
     data_config = config.get("data", {})
     history_data = batch_get_history(
         candidate_codes,
@@ -175,6 +197,22 @@ def run(config_path: str | None = None, top_n: int | None = None) -> list[dict]:
                 total_score += min(main_net / 1e8 * 5, 10)
                 reasons.append(f"  主力资金净流入 {main_net / 1e4:.0f}万")
 
+        # 基本面信息
+        fund_info = fund_map.get(code, {})
+        if fund_info:
+            roe = fund_info.get("roe")
+            rev_yoy = fund_info.get("revenue_yoy")
+            profit_yoy = fund_info.get("profit_yoy")
+            # 基本面加分
+            if roe is not None and not pd.isna(roe) and roe > 15:
+                total_score += 3
+            if profit_yoy is not None and not pd.isna(profit_yoy) and profit_yoy > 30:
+                total_score += 3
+                reasons.append(f"  净利润同比增长 {profit_yoy:.1f}%")
+            elif rev_yoy is not None and not pd.isna(rev_yoy) and rev_yoy > 20:
+                total_score += 2
+                reasons.append(f"  营收同比增长 {rev_yoy:.1f}%")
+
         results.append({
             "code": code,
             "name": code_to_name.get(code, "未知"),
@@ -186,11 +224,33 @@ def run(config_path: str | None = None, top_n: int | None = None) -> list[dict]:
             "stop_loss_info": stop_loss,
             "capital_flow": cf,
             "sector_info": "",
+            "fundamentals": fund_info if fund_info else None,
         })
 
     # 按综合评分排序
     results.sort(key=lambda x: x["score"], reverse=True)
     recommendations = results[:final_top_n]
+
+    # 9. 获取事件标记
+    print("\n[9/9] 获取事件数据...")
+    try:
+        rec_codes = [r["code"] for r in recommendations]
+        event_flags = get_event_flags(rec_codes)
+        for rec in recommendations:
+            flags = event_flags.get(rec["code"], [])
+            if flags:
+                for flag in flags:
+                    if "预增" in flag or "龙虎榜" in flag:
+                        rec["reasons"].append(f"  {flag}")
+                    elif "预减" in flag or "解禁" in flag:
+                        rec["reasons"].append(f"  ⚠ {flag}")
+                rec["event_flags"] = flags
+        if event_flags:
+            print(f"  发现 {len(event_flags)} 只推荐股票有事件信息")
+        else:
+            print("  暂无事件信息")
+    except Exception as e:
+        print(f"  获取事件数据失败: {e}")
 
     # 生成报告
     date_str = datetime.now().strftime("%Y-%m-%d")
