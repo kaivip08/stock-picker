@@ -140,7 +140,7 @@ def _fetch_eastmoney_history(code: str, start_date: str, end_date: str) -> pd.Da
     for url in _EASTMONEY_HIST_URLS:
         try:
             resp = _session.get(
-                url, params=params, timeout=15,
+                url, params=params, timeout=3,
                 headers={"Referer": "https://quote.eastmoney.com/"},
             )
             resp.raise_for_status()
@@ -276,6 +276,11 @@ def _get_stock_code_list() -> list[str]:
 def _fetch_tencent_history(code: str, start_date: str, end_date: str) -> pd.DataFrame | None:
     """腾讯历史行情API"""
     tc_code = _tencent_code(code)
+    # 腾讯API需要 YYYY-MM-DD 格式，输入可能是 YYYYMMDD
+    if len(start_date) == 8 and "-" not in start_date:
+        start_date = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
+    if len(end_date) == 8 and "-" not in end_date:
+        end_date = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
     url = (
         f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
         f"?param={tc_code},day,{start_date},{end_date},640,qfq"
@@ -325,6 +330,54 @@ def _sina_code(code: str) -> str:
     if code.startswith(("6", "9")):
         return f"sh{code}"
     return f"sz{code}"
+
+
+def _fetch_sina_history(code: str, start_date: str, end_date: str) -> pd.DataFrame | None:
+    """新浪历史行情API"""
+    sina_code = _sina_code(code)
+    url = (
+        f"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php"
+        f"/CN_MarketData.getKLineData?symbol={sina_code}&scale=240&ma=no&datalen=250"
+    )
+    try:
+        resp = _session.get(
+            url, timeout=10,
+            headers={"Referer": "https://finance.sina.com.cn"},
+        )
+        resp.raise_for_status()
+        text = resp.text.strip()
+        if not text or text == "null":
+            return None
+        import json
+        klines = json.loads(text)
+        if not klines:
+            return None
+        rows = []
+        for k in klines:
+            rows.append({
+                "date": k.get("day", ""),
+                "open": float(k.get("open", 0)),
+                "close": float(k.get("close", 0)),
+                "high": float(k.get("high", 0)),
+                "low": float(k.get("low", 0)),
+                "volume": float(k.get("volume", 0)),
+                "amount": 0,
+                "amplitude": 0,
+                "pct_change": 0,
+                "change": 0,
+                "turnover_rate": 0,
+            })
+        if not rows:
+            return None
+        df = pd.DataFrame(rows)
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date").drop_duplicates(subset=["date"]).reset_index(drop=True)
+        if len(df) > 1:
+            df["pct_change"] = df["close"].pct_change() * 100
+            df["change"] = df["close"].diff()
+        return df
+    except Exception:
+        return None
 
 
 def _fetch_sina_spot() -> pd.DataFrame:
@@ -480,10 +533,15 @@ def filter_stocks(df: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+# 记录数据源失败次数，用于智能跳过不可用的数据源
+_source_failures: dict[str, int] = {"eastmoney": 0, "tencent": 0, "sina": 0}
+_FAILURE_SKIP_THRESHOLD = 5
+
+
 def get_stock_history(
     code: str,
     days: int = 120,
-    retry_times: int = 3,
+    retry_times: int = 2,
     interval: float = 1.0,
 ) -> pd.DataFrame | None:
     """获取单只股票的历史行情数据（自动切换数据源）"""
@@ -491,32 +549,39 @@ def get_stock_history(
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
 
     fetchers = [
-        _fetch_eastmoney_history,
-        _fetch_tencent_history,
+        ("eastmoney", _fetch_eastmoney_history),
+        ("tencent", _fetch_tencent_history),
+        ("sina", _fetch_sina_history),
     ]
 
-    for fetch_func in fetchers:
+    for source_name, fetch_func in fetchers:
+        if _source_failures[source_name] >= _FAILURE_SKIP_THRESHOLD:
+            continue
         for attempt in range(retry_times):
             try:
                 df = fetch_func(code, start_date, end_date)
                 if df is not None and len(df) >= 20:
+                    _source_failures[source_name] = max(0, _source_failures[source_name] - 1)
                     return df
                 break
             except Exception:
                 if attempt < retry_times - 1:
                     time.sleep(interval * (attempt + 1) + random.uniform(0, 0.5))
                 continue
+        _source_failures[source_name] += 1
     return None
 
 
 def batch_get_history(
     codes: list[str],
     days: int = 120,
-    retry_times: int = 3,
-    interval: float = 1.0,
+    retry_times: int = 2,
+    interval: float = 1.5,
     progress_callback: Any = None,
 ) -> dict[str, pd.DataFrame]:
     """批量获取多只股票的历史数据"""
+    global _source_failures
+    _source_failures = {"eastmoney": 0, "tencent": 0, "sina": 0}
     result = {}
     total = len(codes)
     for i, code in enumerate(codes):
@@ -525,5 +590,5 @@ def batch_get_history(
             result[code] = df
         if progress_callback:
             progress_callback(i + 1, total, code)
-        time.sleep(interval + random.uniform(0, 0.3))
+        time.sleep(interval + random.uniform(0.2, 1.0))
     return result
