@@ -34,6 +34,33 @@ python main.py -c my_config.yaml
 python main.py --csv
 ```
 
+### Pro Scanner（中短线主板爆发力扫描器）
+
+针对**A 股主板中短线爆发力个股**，基于"团队炒股方案"§2.1–§2.2 的三共振（题材 / 资金 / 技术）筛选体系，
+输出包含大盘速览、行业 / 概念板块 Top、候选股一览表、个股深度详情（含交易计划）的完整 Markdown 报告。
+
+```bash
+# 默认输出 Top 15 候选股
+python scan_pro.py
+
+# 输出 Top 20
+python scan_pro.py -n 20
+
+# 调整深度分析的股票数量（越大越慢）
+python scan_pro.py --deep-n 80
+
+# 自定义配置
+python scan_pro.py -c my_config.yaml
+```
+
+**输出说明**：
+- 严格只筛选沪深主板（60xxxx / 000xxx / 001xxx / 002xxx / 003xxx），自动剔除创业板 / 科创板 / 北交所
+- 综合分 = 技术(40%) + 资金(35%) + 题材(25%)
+- 报告自动按方案 §4.1 个股深度分析模板生成（含交易计划 / 止损 / 风险点 Checklist）
+- 候选股池给团队，**不替团队决策**
+
+详见 `config.yaml` 中 `scanner_pro:` 区段的可调参数。
+
 ## 选股策略
 
 | 策略 | 权重 | 说明 |
