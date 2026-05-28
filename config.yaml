@@ -55,3 +55,45 @@ report:
   save_to_file: true
   # 输出格式：text, csv
   output_format: "text"
+
+
+# ============================================================
+# Pro Scanner（中短线主板爆发力扫描器）专属配置
+# 对应"团队炒股方案"§2.1–§2.2 三共振筛选条件
+# 运行入口：python scan_pro.py
+# ============================================================
+scanner_pro:
+  # 输出候选股数量（团队挑选用）
+  top_n: 15
+  # 进入深度分析（K 线 + 指标）的候选股数量
+  deep_analyze_top_n: 60
+  # 历史 K 线天数（用于均线/ATR/突破计算）
+  history_days: 120
+
+  # 硬性筛选条件 (§2.2)
+  # 流通市值范围（亿元）
+  circ_mcap_min_yi: 30
+  circ_mcap_max_yi: 300
+  # 股价范围（元）
+  price_min: 3.0
+  price_max: 50.0
+  # 日成交额下限（亿元）
+  amount_min_yi: 1.0
+  # 近 5 日均成交额下限（亿元）
+  avg_amount_min_yi: 0.8
+  # 当日换手率下限（%）；盘中扫描可调到 2.0
+  turnover_rate_min: 3.0
+  # 当日涨跌幅过滤（剔除已封板与暴跌）
+  pct_change_max: 9.5
+  pct_change_min: -4.0
+  # 距 60 日均线最大偏离（%），避开高位与下跌趋势
+  max_dist_to_ma60_pct: 15.0
+  # ATR/股价最小比率（%），保证弹性
+  min_atr_pct: 3.0
+  # 近 60 日累计涨幅上限（%），剔除过热票
+  max_cum_pct_60d: 80.0
+
+  # 三共振权重（总和=1）
+  weight_tech: 0.40   # 技术面
+  weight_money: 0.35  # 资金面
+  weight_theme: 0.25  # 题材面
