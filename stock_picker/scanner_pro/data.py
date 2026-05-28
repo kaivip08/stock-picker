@@ -106,6 +106,7 @@ def _get_paginated(
 
     items: list[dict[str, Any]] = []
     server_total: int | None = None
+    consecutive_failures = 0
     for pn in range(1, max_pages + 1):
         params = dict(base_params)
         params["pn"] = str(pn)
@@ -114,7 +115,9 @@ def _get_paginated(
         page_items: list[dict[str, Any]] | None = None
         for url in EASTMONEY_CLIST_NODES:
             try:
-                resp = _session.get(url, params=params, headers=headers, timeout=12)
+                resp = _session.get(url, params=params, headers=headers, timeout=8)
+                if resp.status_code != 200 or not resp.text.startswith("{"):
+                    continue
                 data = resp.json().get("data") or {}
                 page_items = data.get("diff") or []
                 if server_total is None:
@@ -124,11 +127,18 @@ def _get_paginated(
                 continue
 
         if not page_items:
+            consecutive_failures += 1
+            # 第一页就失败 → 直接放弃（节点不可用）
+            if pn == 1 and consecutive_failures >= 1:
+                break
             # 节点暂时不可用 / 已超过总页数
             if server_total is not None and pn * pz >= server_total:
                 break
+            if consecutive_failures >= 5:
+                break
             time.sleep(0.6)
             continue
+        consecutive_failures = 0
 
         items.extend(page_items)
         if server_total and len(items) >= server_total:
@@ -159,18 +169,52 @@ def _items_to_df(items: list[dict[str, Any]], field_map: dict[str, str]) -> pd.D
     return df
 
 
+def _fetch_main_board_spot_tencent_fallback() -> pd.DataFrame:
+    """东财不可用时的降级方案：从腾讯拉全 A 股 spot，再过滤主板。
+
+    注意：
+    - 腾讯 amount 字段单位是万元，需要 × 1e4 转为元
+    - 腾讯返回中 volume_ratio 字段在原 data_fetcher 中没有正确解析，置为 NaN
+    """
+    from stock_picker.data_fetcher import _fetch_tencent_spot
+    df = _fetch_tencent_spot()
+    if df.empty:
+        return df
+    df["code"] = df["code"].astype(str)
+    mask = df["code"].apply(is_main_board_code)
+    df = df[mask].copy().reset_index(drop=True)
+    # 单位统一：amount 万元 → 元
+    if "amount" in df.columns:
+        df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * 1e4
+    # volume_ratio 在 data_fetcher 里未正确解析（实际是 volume），重置为缺失
+    if "volume_ratio" in df.columns:
+        df["volume_ratio"] = pd.NA
+    return df
+
+
 def fetch_main_board_spot() -> pd.DataFrame:
     """拉取沪深主板（含科创/创业）实时行情，全部分页。
 
     注意：fs 段实际包含科创/创业板，调用方需用 `is_main_board` 过滤纯主板。
+    若东财全部节点不可用，自动降级到腾讯 spot。
     """
-    items = _get_paginated(
-        fs=_MAIN_BOARD_FS,
-        fields=_SPOT_FIELDS,
-        fid="f12",
-        pz=100,
-    )
-    return _items_to_df(items, _SPOT_FIELD_MAP)
+    try:
+        items = _get_paginated(
+            fs=_MAIN_BOARD_FS,
+            fields=_SPOT_FIELDS,
+            fid="f12",
+            pz=100,
+        )
+    except Exception:
+        items = []
+    df = _items_to_df(items, _SPOT_FIELD_MAP)
+    if df.empty or len(df) < 100:
+        # 东财空 / 极度残缺 → 用腾讯降级
+        try:
+            df = _fetch_main_board_spot_tencent_fallback()
+        except Exception:
+            pass
+    return df
 
 
 def fetch_fund_flow_rank() -> pd.DataFrame:
@@ -218,39 +262,45 @@ _EASTMONEY_STOCK_GET_NODES = [
 ]
 
 
-def fetch_stock_sectors(code: str) -> dict[str, Any] | None:
-    """获取单只股票的行业 / 概念 / 地域标签。
+def fetch_stock_sectors(code: str, max_retries: int = 2) -> dict[str, Any] | None:
+    """获取单只股票的行业 / 概念 / 地域标签（带重试与节点轮询）。
 
     返回 {'industry': str, 'region': str, 'concepts': list[str]} 或 None。
     """
     market = "1" if code.startswith(("6", "9")) else "0"
-    params = {
+    params_base = {
         "secid": f"{market}.{code}",
         "ut": "fa5fd1943c7b386f172d6893dbfba10b",
         "fields": "f57,f58,f127,f128,f129",
-        "_": str(int(time.time() * 1000)),
     }
-    for url in _EASTMONEY_STOCK_GET_NODES:
-        try:
-            resp = _session.get(
-                url, params=params,
-                headers={"Referer": "https://quote.eastmoney.com/"},
-                timeout=8,
-            )
-            if resp.status_code != 200:
+    for attempt in range(max_retries):
+        for url in _EASTMONEY_STOCK_GET_NODES:
+            try:
+                params = dict(params_base)
+                params["_"] = str(int(time.time() * 1000))
+                resp = _session.get(
+                    url, params=params,
+                    headers={"Referer": "https://quote.eastmoney.com/"},
+                    timeout=8,
+                )
+                if resp.status_code != 200:
+                    continue
+                if not resp.text.startswith("{"):
+                    continue
+                data = resp.json().get("data") or {}
+                if not data:
+                    continue
+                concepts_raw = data.get("f129") or ""
+                concepts = [c.strip() for c in concepts_raw.split(",") if c.strip()]
+                return {
+                    "industry": (data.get("f127") or "").strip() or None,
+                    "region": (data.get("f128") or "").strip() or None,
+                    "concepts": concepts,
+                }
+            except Exception:
                 continue
-            data = resp.json().get("data") or {}
-            if not data:
-                continue
-            concepts_raw = data.get("f129") or ""
-            concepts = [c.strip() for c in concepts_raw.split(",") if c.strip()]
-            return {
-                "industry": (data.get("f127") or "").strip() or None,
-                "region": (data.get("f128") or "").strip() or None,
-                "concepts": concepts,
-            }
-        except Exception:
-            continue
+        if attempt < max_retries - 1:
+            time.sleep(0.8 + attempt * 0.5)
     return None
 
 

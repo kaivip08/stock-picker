@@ -80,6 +80,40 @@ def _fetch_indices() -> list[dict]:
                 break
         except Exception:
             continue
+
+    # 腾讯降级
+    if not raw_by_code:
+        try:
+            tencent_map = {
+                "000001": "sh000001",
+                "399001": "sz399001",
+                "399006": "sz399006",
+                "000688": "sh000688",
+                "000300": "sh000300",
+                "000905": "sh000905",
+            }
+            tc_codes = ",".join(tencent_map.values())
+            r = _session.get(f"http://qt.gtimg.cn/q={tc_codes}", timeout=8)
+            r.encoding = "gbk"
+            for line in r.text.strip().split("\n"):
+                line = line.strip()
+                import re as _re
+                m = _re.search(r'v_s([hz]\d{6})="(.+)"', line)
+                if not m:
+                    continue
+                raw_code = m.group(1)[1:]
+                fields = m.group(2).split("~")
+                if len(fields) < 33:
+                    continue
+                try:
+                    close_v = float(fields[3])
+                    pct_v = float(fields[32]) if fields[32] else None
+                    raw_by_code[raw_code] = {"f2": close_v, "f3": pct_v}
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     indices: list[dict] = []
     for code, name in order:
         it = raw_by_code.get(code)
@@ -134,6 +168,11 @@ def run_scanner_pro(config: dict[str, Any], verbose: bool = True) -> dict[str, A
     log("中短线主板爆发力 Pro Scanner")
     log("=" * 60)
 
+    # 0) 先拉指数（短请求，放最前避免后续被限流）
+    log("\n[0/6] 拉取主要指数 ...")
+    indices = _fetch_indices()
+    log(f"      {sum(1 for x in indices if x.get('close') is not None)} 个有效")
+
     # 1) 拉取主板实时行情
     log("\n[1/6] 拉取沪深主板实时行情 ...")
     spot = fetch_main_board_spot()
@@ -146,10 +185,14 @@ def run_scanner_pro(config: dict[str, Any], verbose: bool = True) -> dict[str, A
         return {"candidates": [], "market": {}, "timestamp": datetime.now()}
 
     # 按 (换手率 * 量比) 取活跃 Top N 进入深度分析
-    spot_filtered["activity"] = (
-        spot_filtered["turnover_rate"].fillna(0)
-        * spot_filtered["volume_ratio"].fillna(0)
-    )
+    # 若量比缺失（如腾讯降级路径），退化为 换手率 * (成交额 / 1亿)
+    tr = pd.to_numeric(spot_filtered["turnover_rate"], errors="coerce").fillna(0)
+    vr = pd.to_numeric(spot_filtered.get("volume_ratio"), errors="coerce")
+    if vr is None or vr.isna().all():
+        amount_yi = pd.to_numeric(spot_filtered.get("amount"), errors="coerce").fillna(0) / 1e8
+        spot_filtered["activity"] = tr * (1 + amount_yi)
+    else:
+        spot_filtered["activity"] = tr * vr.fillna(1.0)
     spot_filtered = spot_filtered.sort_values(
         "activity", ascending=False, na_position="last"
     ).reset_index(drop=True)
@@ -222,7 +265,7 @@ def run_scanner_pro(config: dict[str, Any], verbose: bool = True) -> dict[str, A
 
         # 板块标签（每只单独查，限流）
         sectors = fetch_stock_sectors(code) or {}
-        time.sleep(0.06)
+        time.sleep(0.2)
 
         # 三共振打分
         tech = score_technical(hist_df, spot_row, config)
@@ -257,7 +300,7 @@ def run_scanner_pro(config: dict[str, Any], verbose: bool = True) -> dict[str, A
     log(f"\n[6/6] 取综合分 Top {len(final)} 输出报告\n")
 
     market = {
-        "indices": _fetch_indices(),
+        "indices": indices,
         "industry_top": industry_df.head(20).to_dict("records") if not industry_df.empty else [],
         "concept_top": concept_df.head(20).to_dict("records") if not concept_df.empty else [],
     }
